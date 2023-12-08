@@ -3,6 +3,7 @@ package ping
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -62,6 +63,7 @@ func PingCmd(ch *cmdutil.Helper) *cobra.Command {
 		timeout     time.Duration
 		concurrency uint8
 		count       uint8
+		tls         bool
 	}
 
 	cmd := &cobra.Command{
@@ -120,6 +122,7 @@ func PingCmd(ch *cmdutil.Helper) *cobra.Command {
 				flags.concurrency,
 				flags.count,
 				flags.timeout,
+				flags.tls,
 			)
 			end()
 
@@ -134,6 +137,7 @@ func PingCmd(ch *cmdutil.Helper) *cobra.Command {
 	cmd.PersistentFlags().Uint8Var(&flags.concurrency, "concurrency",
 		8, "Number of concurrent pings.")
 	cmd.PersistentFlags().Uint8VarP(&flags.count, "count", "n", 10, "Number of pings")
+	cmd.PersistentFlags().BoolVar(&flags.tls, "tls", false, "Use TLS")
 
 	return cmd
 }
@@ -223,7 +227,7 @@ func makeHostname(subdomain string) string {
 	return subdomain + baseDomain
 }
 
-func pingEndpoints(ctx context.Context, eps []string, concurrency, count uint8, timeout time.Duration) []pingResult {
+func pingEndpoints(ctx context.Context, eps []string, concurrency, count uint8, timeout time.Duration, useTLS bool) []pingResult {
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
@@ -244,7 +248,7 @@ func pingEndpoints(ctx context.Context, eps []string, concurrency, count uint8, 
 				var sum time.Duration
 				var resultErr error
 				for i := 0; i < int(count); i++ {
-					d, err := pingEndpoint(ctx, makeHostname(ep), timeout)
+					d, err := pingEndpoint(ctx, makeHostname(ep), timeout, useTLS)
 					// XXX: on failures, set the duration to the timeout so they are sorted last
 					if err != nil {
 						resultErr = err
@@ -271,7 +275,7 @@ func pingEndpoints(ctx context.Context, eps []string, concurrency, count uint8, 
 	return results
 }
 
-func pingEndpoint(ctx context.Context, hostname string, timeout time.Duration) (time.Duration, error) {
+func pingEndpoint(ctx context.Context, hostname string, timeout time.Duration, useTLS bool) (time.Duration, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -297,5 +301,14 @@ func pingEndpoint(ctx context.Context, hostname string, timeout time.Duration) (
 		return 0, err
 	}
 	defer conn.Close()
+	if useTLS {
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName: hostname,
+		})
+		defer tlsConn.Close()
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return 0, err
+		}
+	}
 	return time.Since(start), nil
 }
